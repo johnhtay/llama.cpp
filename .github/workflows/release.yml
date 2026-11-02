@@ -1766,3 +1766,5 @@ jobs:
     needs: [check-release]
     if: ${{ needs.check-release.outputs.should_release == 'true' }}
     uses: ./.github/workflows/ui-build.yml
+
+# fork note: pushed to master (instead of a tag) to trigger this workflow, since tags do not fire it
