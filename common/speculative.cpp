@@ -986,7 +986,11 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
     common_batch batch;        // noise tokens
     common_batch batch_inject; // target features for KV cache injection
 
-    std::vector<float> features_buf; // [n_chunk, n_embd_enc] gathered target features
+    // [n_chunk, n_embd_enc] gathered target features, staged in pinned host memory when
+    // available so the draft's H2D is a true async DMA - pageable staging blocks the host
+    // and crawls under RAM pressure; falls back to heap memory if no GPU host buffer
+    ggml_backend_buffer_ptr features_pin;
+    std::vector<float> features_buf;
 
     std::vector<common_sampler_ptr> smpls;
 
@@ -1100,6 +1104,18 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
 
         batch        = common_batch(ctx_dft);
         batch_inject = common_batch(ctx_dft);
+
+        // pin the feature-staging buffer for async H2D to the draft; sized for the largest
+        // chunk process() can gather (one draft ubatch x n_embd_enc floats per token)
+        if (ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU)) {
+            if (ggml_backend_buffer_type_t buft = ggml_backend_dev_host_buffer_type(dev)) {
+                features_pin.reset(ggml_backend_buft_alloc_buffer(buft,
+                        sizeof(float) * (size_t) llama_n_ubatch(ctx_dft) * n_embd_enc));
+                if (!features_pin) {
+                    LOG_WRN("%s: failed to allocate pinned feature buffer, falling back to heap\n", __func__);
+                }
+            }
+        }
 
         // embd batches on an M-RoPE draft carry 4 position rows per token
         is_mrope = llama_model_rope_type(model_dft) == LLAMA_ROPE_TYPE_MROPE;
@@ -1225,14 +1241,22 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
 
                 // gather target features per extract layer; the fused decode encodes and
                 // injects them into the K/V cache at the target positions
-                features_buf.resize((size_t) n_chunk * n_embd_enc);
+                const size_t n_feats = (size_t) n_chunk * n_embd_enc;
+                float * features;
+                if (features_pin) {
+                    GGML_ASSERT(n_feats * sizeof(float) <= ggml_backend_buffer_get_size(features_pin.get()));
+                    features = (float *) ggml_backend_buffer_get_base(features_pin.get());
+                } else {
+                    features_buf.resize(n_feats);
+                    features = features_buf.data();
+                }
                 for (uint32_t k = 0; k < target_layer_ids_n; ++k) {
                     const float * layer = llama_get_embeddings_layer_inp(ctx_tgt, (uint32_t) target_layer_ids[k]);
                     if (!layer) {
                         GGML_ABORT("DFlash: target layer %d input not extracted.", target_layer_ids[k]);
                     }
                     for (int32_t i = 0; i < n_chunk; ++i) {
-                        float       * dst = features_buf.data() + (size_t) i * n_embd_enc + k * (size_t) n_embd_tgt;
+                        float       * dst = features + (size_t) i * n_embd_enc + k * (size_t) n_embd_tgt;
                         const float * src = layer + (size_t) (i_batch_beg[seq_id] + offset + i) * n_embd_tgt;
                         std::memcpy(dst, src, (size_t) n_embd_tgt * sizeof(float));
                     }
@@ -1242,7 +1266,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
                 for (int32_t i = 0; i < n_chunk; ++i) {
                     const llama_pos p = batch_in.tokens[i_batch_beg[seq_id] + offset + i].pos[0];
                     const llama_pos pos_arr[4] = { p, p, p, 0 };
-                    batch_inject.add_embd({ features_buf.data() + (size_t) i * n_embd_enc, 1, (size_t) n_embd_enc }, pos_arr, seq_id, false);
+                    batch_inject.add_embd({ features + (size_t) i * n_embd_enc, 1, (size_t) n_embd_enc }, pos_arr, seq_id, false);
                 }
                 const int32_t rc = llama_process(ctx_dft, LLAMA_PROCESS_TYPE_DECODE, batch_inject.get());
                 if (rc != 0) {
