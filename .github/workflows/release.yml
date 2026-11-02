@@ -1768,3 +1768,5 @@ jobs:
     uses: ./.github/workflows/ui-build.yml
 
 # fork note: pushed to master (instead of a tag) to trigger this workflow, since tags do not fire it
+
+# fork: trigger run after enabling Actions on the fork
