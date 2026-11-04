@@ -40,6 +40,7 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: johnhtay/llama.cpp
         run: |
           set -x
           if [ -f dist/llama-bin-win-cpu-x64.zip ]; then
@@ -49,10 +50,13 @@ jobs:
           else
             echo "no usable artifact content"; exit 7
           fi
-          gh release create fork-pin-features-dropin "$ASSET" \
+          if ! ERR=$(gh release create fork-pin-features-dropin "$ASSET" \
             --title "llama.cpp b11803 + features_buf pin patch (win-cuda 13.4 x64)" \
-            --notes "Built from fork master (b11803 base + features_buf pin patch in common/speculative.cpp). Artifact from run 41554637347, windows-cuda 13.4 x64 job." \
-            --prerelease || exit 4
+            --notes "Built from fork master (b11803 base + features_buf pin patch in common/speculative.cpp). Artifact from run 41554637347, windows-cpu x64 job." \
+            --prerelease 2>&1); then
+            echo "::error title=gh-release-create::$ERR"
+            exit 4
+          fi
 
       - name: Stage diagnosis via exit code
         if: always()
