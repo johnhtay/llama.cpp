@@ -27,7 +27,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -x
-          gh api repos/johnhtay/llama.cpp/actions/artifacts/13199380984/zip > artifact.zip
+          # windows-cuda artifacts contain ONLY ggml-cuda.dll (GGML_BACKEND_DL=ON);
+          # the patched CPU suite (llama-common.dll etc.) is in the windows-cpu artifact
+          gh api repos/johnhtay/llama.cpp/actions/artifacts/13194187919/zip > artifact.zip
           echo "zip bytes: $(stat -c%s artifact.zip)"
           rm -rf dist && mkdir dist
           unzip -q artifact.zip -d dist
@@ -40,8 +42,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -x
-          if [ -f dist/llama-bin-win-cuda-13.4-x64.zip ]; then
-            ASSET=dist/llama-bin-win-cuda-13.4-x64.zip
+          if [ -f dist/llama-bin-win-cpu-x64.zip ]; then
+            ASSET=dist/llama-bin-win-cpu-x64.zip
           elif ls dist/*.exe >/dev/null 2>&1; then
             (cd dist && zip -q -r ../bundle.zip .); ASSET=bundle.zip
           else
